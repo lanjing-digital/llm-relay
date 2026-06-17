@@ -1,0 +1,21 @@
+# Checklist
+
+- [x] Go 项目初始化完成，go mod init 和依赖引入无误，`go build` 可成功编译
+- [x] SQLite 数据库自动创建，Config 表结构符合 spec 定义
+- [x] GET /api/configs 返回空数组时正常（初始无数据）
+- [x] POST /api/configs 可成功创建配置，并返回包含 id 的完整数据
+- [x] PUT /api/configs/:id 可成功更新配置，更新不存在的 id 返回 404
+- [x] DELETE /api/configs/:id 可成功删除配置，删除不存在的 id 返回 404
+- [x] POST /api/configs/:id/test 可调用目标 API 并返回连通性结果
+- [x] POST /v1/chat/completions 使用已配置的 external_model（如 deepseek-chat）可成功转发到目标 API
+- [x] POST /v1/chat/completions 使用未配置的 model 返回 400 错误
+- [x] POST /v1/chat/completions 流式请求（stream: true）SSE 数据可正确透传
+- [x] 非流式请求响应可正确透传
+- [x] 前端管理页面可通过 /admin 访问，React SPA 正常加载
+- [x] 前端列表页正确展示所有配置
+- [x] 前端创建/编辑表单提交后列表刷新
+- [x] 前端删除确认后列表刷新
+- [x] 前端连通性测试按钮可展示测试结果
+- [x] 环境变量 LLM_RELAY_PORT 可正确设置服务端口
+- [x] 未设置端口时，默认监听 8080
+- [x] Go 编译后的二进制文件内置前端静态资源，无需额外部署前端

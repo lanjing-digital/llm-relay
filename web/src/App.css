@@ -1,0 +1,65 @@
+.app-shell {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(103, 80, 164, 0.14), transparent 32%),
+    linear-gradient(180deg, #f7f8fc 0%, #eef2ff 100%);
+}
+
+.app-header {
+  height: auto;
+  min-height: 88px;
+  padding: 24px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(18px);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.app-header .ant-typography {
+  margin-bottom: 0;
+}
+
+.app-header .ant-typography + .ant-typography {
+  margin-top: 4px;
+  color: rgba(15, 23, 42, 0.65);
+}
+
+.app-content {
+  padding: 32px;
+}
+
+.content-card {
+  border-radius: 24px;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.08);
+}
+
+.card-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.card-heading .ant-typography {
+  margin-bottom: 0;
+}
+
+.card-heading .ant-typography + .ant-typography {
+  margin-top: 4px;
+  color: rgba(15, 23, 42, 0.65);
+}
+
+@media (max-width: 900px) {
+  .app-header {
+    padding: 20px;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .app-content {
+    padding: 20px;
+  }
+}

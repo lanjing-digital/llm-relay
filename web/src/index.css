@@ -1,0 +1,17 @@
+#root {
+  min-height: 100vh;
+}
+
+body {
+  margin: 0;
+  font-family:
+    'SF Pro Text',
+    'PingFang SC',
+    'Microsoft YaHei',
+    system-ui,
+    sans-serif;
+  color: #0f172a;
+  background: #eef2ff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
