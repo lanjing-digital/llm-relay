@@ -11,7 +11,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"llm_relay/internal/model"
 	"llm_relay/internal/repository"
 
 	"github.com/gin-gonic/gin"
@@ -23,31 +25,82 @@ var upstreamHTTPClient = &http.Client{
 }
 
 func ChatCompletions(c *gin.Context) {
+	start := time.Now()
+
+	logEntry := model.Log{
+		Method:   c.Request.Method,
+		Path:     c.Request.URL.Path,
+		ClientIP: c.ClientIP(),
+	}
+
+	var requestSnippet string
+	var responseSnippet string
+	var logErr string
+	var externalModel string
+	var targetModel string
+	var upstreamURL string
+
+	defer func() {
+		logEntry.ExternalModel = externalModel
+		logEntry.TargetModel = targetModel
+		logEntry.UpstreamURL = upstreamURL
+		logEntry.RequestSnippet = requestSnippet
+		logEntry.ResponseSnippet = responseSnippet
+		if logErr == "" && len(c.Errors) > 0 {
+			logErr = c.Errors.String()
+		}
+		logEntry.Error = logErr
+		logEntry.StatusCode = c.Writer.Status()
+		logEntry.DurationMs = time.Since(start).Milliseconds()
+		_ = repository.CreateLog(&logEntry)
+	}()
+
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		logErr = "failed to read body"
+		responseSnippet = writeJSONWithSnippet(c, http.StatusBadRequest, gin.H{"error": "failed to read body"})
 		return
 	}
+	requestSnippet = truncateUTF8Bytes(body, 2048)
 
 	var requestBody map[string]interface{}
 	if err := json.Unmarshal(body, &requestBody); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+		logErr = "invalid JSON"
+		responseSnippet = writeJSONWithSnippet(c, http.StatusBadRequest, gin.H{"error": "invalid JSON"})
 		return
 	}
 
 	modelName, ok := requestBody["model"].(string)
 	if !ok || strings.TrimSpace(modelName) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "model is required"})
+		logErr = "model is required"
+		responseSnippet = writeJSONWithSnippet(c, http.StatusBadRequest, gin.H{"error": "model is required"})
 		return
 	}
+	externalModel = modelName
 
 	config, err := repository.GetConfigByExternalModel(modelName)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "model not configured"})
+			logErr = "model not configured"
+			responseSnippet = writeJSONWithSnippet(c, http.StatusBadRequest, gin.H{"error": "model not configured"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		logErr = err.Error()
+		responseSnippet = writeJSONWithSnippet(c, http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	targetModel = config.TargetModel
+
+	upstreamURL, err = buildChatCompletionsURL(config.TargetBaseURL)
+	if err != nil {
+		logErr = err.Error()
+		responseSnippet = writeJSONWithSnippet(c, http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if !validateBearerToken(c.GetHeader("Authorization"), config.TargetAPIKey) {
+		logErr = "unauthorized"
+		responseSnippet = writeJSONWithSnippet(c, http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 
@@ -55,19 +108,15 @@ func ChatCompletions(c *gin.Context) {
 
 	payload, err := json.Marshal(requestBody)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encode upstream request"})
-		return
-	}
-
-	upstreamURL, err := buildChatCompletionsURL(config.TargetBaseURL)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		logErr = "failed to encode upstream request"
+		responseSnippet = writeJSONWithSnippet(c, http.StatusInternalServerError, gin.H{"error": "failed to encode upstream request"})
 		return
 	}
 
 	upstreamReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, upstreamURL, bytes.NewReader(payload))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create upstream request"})
+		logErr = "failed to create upstream request"
+		responseSnippet = writeJSONWithSnippet(c, http.StatusInternalServerError, gin.H{"error": "failed to create upstream request"})
 		return
 	}
 
@@ -80,7 +129,8 @@ func ChatCompletions(c *gin.Context) {
 
 	upstreamResp, err := upstreamHTTPClient.Do(upstreamReq)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream request failed", "detail": err.Error()})
+		logErr = "upstream request failed"
+		responseSnippet = writeJSONWithSnippet(c, http.StatusBadGateway, gin.H{"error": "upstream request failed", "detail": err.Error()})
 		return
 	}
 	defer upstreamResp.Body.Close()
@@ -90,12 +140,23 @@ func ChatCompletions(c *gin.Context) {
 
 	stream, _ := requestBody["stream"].(bool)
 	if stream {
-		streamUpstreamResponse(c, upstreamResp.Body)
+		collector := newSSEContentCollector()
+		streamUpstreamResponse(c, io.TeeReader(upstreamResp.Body, collector))
+		responseSnippet = collector.result()
+		if upstreamResp.StatusCode >= 400 {
+			logErr = upstreamResp.Status
+		}
 		return
 	}
 
-	if _, err := io.Copy(c.Writer, upstreamResp.Body); err != nil {
+	snippetWriter := &limitedBufferWriter{Limit: 2048}
+	reader := io.TeeReader(upstreamResp.Body, snippetWriter)
+	if _, err := io.Copy(c.Writer, reader); err != nil {
 		_ = c.Error(err)
+	}
+	responseSnippet = snippetWriter.String()
+	if upstreamResp.StatusCode >= 400 {
+		logErr = upstreamResp.Status
 	}
 }
 
@@ -196,4 +257,134 @@ func (e invalidBaseURLError) Error() string {
 
 func errInvalidBaseURL(message string) error {
 	return invalidBaseURLError(message)
+}
+
+func validateBearerToken(authHeader string, expectedToken string) bool {
+	parts := strings.Fields(authHeader)
+	if len(parts) != 2 {
+		return false
+	}
+	if parts[0] != "Bearer" {
+		return false
+	}
+	return parts[1] == expectedToken
+}
+
+type limitedBufferWriter struct {
+	Buffer bytes.Buffer
+	Limit  int
+}
+
+func (w *limitedBufferWriter) Write(p []byte) (int, error) {
+	remaining := w.Limit - w.Buffer.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			_, _ = w.Buffer.Write(p[:remaining])
+		} else {
+			_, _ = w.Buffer.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+func (w *limitedBufferWriter) String() string {
+	return w.Buffer.String()
+}
+
+func truncateUTF8Bytes(b []byte, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(b) <= limit {
+		return string(b)
+	}
+
+	truncated := b[:limit]
+	for len(truncated) > 0 && !utf8.Valid(truncated) {
+		truncated = truncated[:len(truncated)-1]
+	}
+	return string(truncated)
+}
+
+func writeJSONWithSnippet(c *gin.Context, statusCode int, body any) string {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encode response"})
+		return ""
+	}
+	c.Data(statusCode, "application/json; charset=utf-8", encoded)
+	return truncateUTF8Bytes(encoded, 2048)
+}
+
+type sseContentCollector struct {
+	buf              bytes.Buffer
+	reasoningContent strings.Builder
+	content          strings.Builder
+}
+
+func newSSEContentCollector() *sseContentCollector {
+	return &sseContentCollector{}
+}
+
+func (s *sseContentCollector) Write(p []byte) (int, error) {
+	s.buf.Write(p)
+	s.parseLines()
+	return len(p), nil
+}
+
+func (s *sseContentCollector) parseLines() {
+	for {
+		line, err := s.buf.ReadString('\n')
+		if err != nil {
+			s.buf.WriteString(line)
+			return
+		}
+		s.processLine(line)
+	}
+}
+
+func (s *sseContentCollector) processLine(line string) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "data:") {
+		return
+	}
+	data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+	if data == "[DONE]" {
+		return
+	}
+	var chunk map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return
+	}
+	choices, ok := chunk["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		return
+	}
+	delta, ok := choices[0].(map[string]interface{})
+	if !ok {
+		return
+	}
+	if v, ok := delta["reasoning_content"].(string); ok {
+		s.reasoningContent.WriteString(v)
+	}
+	if v, ok := delta["content"].(string); ok {
+		s.content.WriteString(v)
+	}
+}
+
+func (s *sseContentCollector) result() string {
+	var sb strings.Builder
+	if s.reasoningContent.Len() > 0 {
+		sb.WriteString("=== reasoning_content ===\n")
+		sb.WriteString(s.reasoningContent.String())
+		sb.WriteString("\n\n")
+	}
+	if s.content.Len() > 0 {
+		sb.WriteString("=== content ===\n")
+		sb.WriteString(s.content.String())
+	}
+	if sb.Len() == 0 {
+		return "[stream] (no content captured)"
+	}
+	return sb.String()
 }

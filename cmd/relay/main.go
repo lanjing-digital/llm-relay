@@ -11,6 +11,7 @@ import (
 	relayassets "llm_relay"
 	"llm_relay/internal/db"
 	"llm_relay/internal/handler"
+	"llm_relay/internal/middleware"
 
 	"github.com/gin-gonic/gin"
 )
@@ -48,12 +49,19 @@ func main() {
 
 func registerAPIRoutes(r *gin.Engine) {
 	api := r.Group("/api")
+
+	api.POST("/auth/login", handler.Login)
+
+	protected := api.Group("")
+	protected.Use(middleware.JWTAuth())
 	{
-		api.GET("/configs", handler.ListConfigs)
-		api.POST("/configs", handler.CreateConfig)
-		api.PUT("/configs/:id", handler.UpdateConfig)
-		api.DELETE("/configs/:id", handler.DeleteConfig)
-		api.POST("/configs/:id/test", handler.TestConfig)
+		protected.GET("/configs", handler.ListConfigs)
+		protected.POST("/configs", handler.CreateConfig)
+		protected.PUT("/configs/:id", handler.UpdateConfig)
+		protected.DELETE("/configs/:id", handler.DeleteConfig)
+		protected.POST("/configs/:id/test", handler.TestConfig)
+		protected.GET("/logs", handler.ListLogs)
+		protected.GET("/logs/:id", handler.GetLog)
 	}
 
 	r.POST("/v1/chat/completions", handler.ChatCompletions)

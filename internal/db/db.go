@@ -15,5 +15,5 @@ func Init(dbPath string) error {
 	if err != nil {
 		return err
 	}
-	return DB.AutoMigrate(&model.Config{})
+	return DB.AutoMigrate(&model.Config{}, &model.Log{})
 }
